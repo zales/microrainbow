@@ -1,0 +1,44 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    name: Build aarch64-linux-musl
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseSmall --summary all
+
+      - name: Verify Binary
+        run: file zig-out/bin/microrainbow
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: microrainbow-aarch64
+          path: zig-out/bin/microrainbow
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: zig-out/bin/microrainbow
+          generate_release_notes: true
