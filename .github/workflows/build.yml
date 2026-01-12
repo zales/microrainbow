@@ -25,7 +25,7 @@ jobs:
           version: 0.15.2
 
       - name: Build
-        run: zig build -Doptimize=ReleaseSmall --summary all
+        run: zig build --summary all
 
       - name: Verify Binary
         run: file zig-out/bin/microrainbow
