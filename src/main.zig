@@ -72,7 +72,7 @@ fn fmtBufZ(buf: []u8, comptime fmt: []const u8, args: anytype) ![:0]const u8 {
 
 fn setGenericVal(path: []const u8, new_val: []const u8) !void {
     // Optimization: check existing value to avoid redundant writes
-    var read_buf: [256]u8 = undefined;
+    var read_buf: [512]u8 = undefined;
     if (readToBuffer(path, &read_buf)) |content| {
         const trimmed = std.mem.trimRight(u8, content, "\n\r");
         if (std.mem.eql(u8, trimmed, new_val)) return;
@@ -127,7 +127,7 @@ const Uci = struct {
     /// Note: The returned slice points to UCI internal memory and is valid only until context changes or deinit.
     fn get(self: Uci, key: []const u8) !?[]const u8 {
         var ptr: c.uci_ptr = std.mem.zeroes(c.uci_ptr);
-        var key_buf: [128]u8 = undefined;
+        var key_buf: [256]u8 = undefined;
         const key_z = try fmtBufZ(&key_buf, "{s}", .{key});
 
         if (c.uci_lookup_ptr(self.ctx, &ptr, @constCast(key_z), true) != 0) return null;
@@ -142,7 +142,7 @@ const Uci = struct {
 
     fn set(self: Uci, key: []const u8, value: []const u8) !void {
         var ptr: c.uci_ptr = std.mem.zeroes(c.uci_ptr);
-        var buf: [128]u8 = undefined;
+        var buf: [512]u8 = undefined;
         // Key and value must be combined for uci_lookup_ptr syntax "package.section.option=value"
         const full = try fmtBufZ(&buf, "{s}={s}", .{ key, value });
 
@@ -167,8 +167,7 @@ const Uci = struct {
 
         if (c.uci_lookup_ptr(self.ctx, &ptr, @constCast(key_z), true) != 0) return false;
 
-        const pkg = ptr.p;
-        if (pkg == null) return false;
+        const pkg = ptr.p orelse return false;
 
         const header = &pkg.*.sections;
         var current = header.next;
@@ -200,8 +199,7 @@ const Uci = struct {
 
         if (c.uci_lookup_ptr(self.ctx, &ptr, @constCast(key_z), true) != 0) return;
 
-        const pkg = ptr.p;
-        if (pkg == null) return;
+        const pkg = ptr.p orelse return;
 
         const header = &pkg.*.sections;
         var current = header.next;
@@ -338,9 +336,12 @@ fn signalLoop() !void {
     var set = std.mem.zeroes(std.os.linux.sigset_t);
     std.os.linux.sigaddset(&set, sig);
 
-    const fd_r = std.os.linux.signalfd(-1, &set, 0);
-    const fd: i32 = @intCast(fd_r);
-    const f = fs.File{ .handle = fd };
+    const fd = std.os.linux.signalfd(-1, &set, 0);
+    if (fd < 0) {
+        std.log.err("Failed to create signalfd, reload functionality disabled", .{});
+        return error.SignalFdFailed;
+    }
+    const f = fs.File{ .handle = @intCast(fd) };
     defer f.close();
 
     while (true) {
@@ -479,11 +480,12 @@ fn wifiStatusLoop() !void {
             }
         }
 
+        defer if (dev_name) |d| allocator.free(d);
+        
         if (customized) {
             _ = waitForReload(10);
             continue;
         }
-        defer if (dev_name) |d| allocator.free(d);
 
         // Calculate Color
         var color: []const u8 = COLOR_BLACK;
@@ -637,11 +639,12 @@ pub fn main() !void {
         }
     } else |_| {}
 
-    // Spawn threads
-    const t_sig = try Thread.spawn(.{}, signalLoop, .{});
-    const t_bri = try Thread.spawn(.{}, brightnessLoop, .{});
-    const t_wan = try Thread.spawn(.{}, wanStatusLoop, .{});
-    const t_wif = try Thread.spawn(.{}, wifiStatusLoop, .{});
+    // Spawn threads with reduced stack size (128 KB instead of default ~8 MB)
+    const THREAD_STACK_SIZE = 128 * 1024;
+    const t_sig = try Thread.spawn(.{ .stack_size = THREAD_STACK_SIZE }, signalLoop, .{});
+    const t_bri = try Thread.spawn(.{ .stack_size = THREAD_STACK_SIZE }, brightnessLoop, .{});
+    const t_wan = try Thread.spawn(.{ .stack_size = THREAD_STACK_SIZE }, wanStatusLoop, .{});
+    const t_wif = try Thread.spawn(.{ .stack_size = THREAD_STACK_SIZE }, wifiStatusLoop, .{});
 
     // Detach all
     t_sig.detach();
